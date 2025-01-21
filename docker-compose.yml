@@ -1,0 +1,135 @@
+# Test Commands for the topicname 'logs':
+# ---------------------------------------
+# docker exec -it kafka-cntr bash /bin/kafka-topics --list --bootstrap-server localhost:9092
+# docker exec -it kafka-cntr bash /bin/kafka-console-consumer --topic logs --from-beginning --bootstrap-server localhost:9092
+# docker exec -it kafka-cntr bash /bin/kafka-console-producer --topic logs --bootstrap-server localhost:9092
+# Notes
+# -----
+# Data will communicate in the direction of log_file-->filebeat-->kafka-->logstash-->Elasticsearch-->kibana
+
+version: "3.3"  
+services:
+#zookeeper service
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.2.0
+    container_name: zookeeper-cntr
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - kafka_elk_nw
+#kafka service 
+  kafka:
+    image: confluentinc/cp-kafka:7.2.0
+    restart: unless-stopped
+    container_name: kafka-cntr
+    ports:
+      - 29092:29092
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper-cntr:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka-cntr:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_ADVERTISED_HOST_NAME: localhost
+    networks:
+      - kafka_elk_nw
+#filebeat service
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.3.3
+    container_name: filebeat
+    user: root
+    networks:
+      - kafka_elk_nw
+    volumes:
+      - ./filebeat.yml:/usr/share/filebeat/filebeat.yml
+      - ./logs:/var/log/apache2
+#elasticsearch service
+  elasticsearch:
+    container_name: elasticsearch-cntr
+    image: elasticsearch:7.9.1
+    environment:
+      - cluster.name=kafka-cluster
+      - bootstrap.memory_lock=true
+      - discovery.type=single-node
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+      - xpack.security.enabled=false
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data:rw
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    ports:
+      - 9200:9200
+      - 9300:9300
+    depends_on:
+      - kafka
+    stdin_open: true
+    tty: true
+    restart: always
+    networks:
+      - kafka_elk_nw
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "50"
+#logstash service
+  logstash:
+    container_name: logstash-cntr
+    image: logstash:7.9.1
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    volumes:
+      - ./logstash-kafka.conf:/usr/share/logstash/pipeline/logstash-kafka.conf
+    ports:
+      - 5044:5044
+    depends_on:
+      - elasticsearch
+    stdin_open: true
+    tty: true
+    restart: always
+    networks:
+      - kafka_elk_nw
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "50"
+#kibana service 
+  kibana:
+    container_name: kibana-cntr
+    image: kibana:7.9.1
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    ports:
+      - 5601:5601
+    depends_on:
+      - elasticsearch
+    stdin_open: true
+    tty: true
+    restart: always
+    networks:
+      - kafka_elk_nw
+    links: ['elasticsearch']
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "50"
+#------------------------------#
+volumes:
+  elasticsearch_data:
+    driver: local
+networks:
+  kafka_elk_nw:
+    driver: bridge
